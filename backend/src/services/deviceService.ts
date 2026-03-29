@@ -143,6 +143,12 @@ function mapListRow(row: any): DeviceListItem {
 }
 
 function listDeviceRows(whereClause: string, values: unknown[]) {
+  const now = dayjs();
+  const nowIso = now.toISOString();
+  const todayStart = now.startOf('day').toISOString();
+  const last7DaysStart = now.subtract(7, 'day').toISOString();
+  const last30DaysStart = now.subtract(30, 'day').toISOString();
+
   return db.prepare(`
     SELECT
       d.*,
@@ -153,36 +159,39 @@ function listDeviceRows(whereClause: string, values: unknown[]) {
       ) AS effective_offline_delay_minutes,
       (
         SELECT COALESCE(SUM(
-          COALESCE(duration_minutes,
-            CAST((JULIANDAY(COALESCE(ended_at, datetime('now'))) - JULIANDAY(started_at)) * 24 * 60 AS INTEGER)
-          )
+          MAX(0, CAST(ROUND(
+            (JULIANDAY(MIN(COALESCE(ended_at, ?), ?)) - JULIANDAY(MAX(started_at, ?))) * 24 * 60
+          ) AS INTEGER))
         ), 0)
         FROM device_sessions
         WHERE device_id = d.id
           AND status = 'online'
-          AND started_at >= ?
+          AND started_at < ?
+          AND (ended_at IS NULL OR ended_at > ?)
       ) AS online_minutes_1d,
       (
         SELECT COALESCE(SUM(
-          COALESCE(duration_minutes,
-            CAST((JULIANDAY(COALESCE(ended_at, datetime('now'))) - JULIANDAY(started_at)) * 24 * 60 AS INTEGER)
-          )
+          MAX(0, CAST(ROUND(
+            (JULIANDAY(MIN(COALESCE(ended_at, ?), ?)) - JULIANDAY(MAX(started_at, ?))) * 24 * 60
+          ) AS INTEGER))
         ), 0)
         FROM device_sessions
         WHERE device_id = d.id
           AND status = 'online'
-          AND started_at >= ?
+          AND started_at < ?
+          AND (ended_at IS NULL OR ended_at > ?)
       ) AS online_minutes_7d,
       (
         SELECT COALESCE(SUM(
-          COALESCE(duration_minutes,
-            CAST((JULIANDAY(COALESCE(ended_at, datetime('now'))) - JULIANDAY(started_at)) * 24 * 60 AS INTEGER)
-          )
+          MAX(0, CAST(ROUND(
+            (JULIANDAY(MIN(COALESCE(ended_at, ?), ?)) - JULIANDAY(MAX(started_at, ?))) * 24 * 60
+          ) AS INTEGER))
         ), 0)
         FROM device_sessions
         WHERE device_id = d.id
           AND status = 'online'
-          AND started_at >= ?
+          AND started_at < ?
+          AND (ended_at IS NULL OR ended_at > ?)
       ) AS online_minutes_30d
     FROM devices d
     ${whereClause}
@@ -190,9 +199,21 @@ function listDeviceRows(whereClause: string, values: unknown[]) {
       CASE WHEN COALESCE(d.name, '') = '' THEN d.mac_address ELSE d.name END COLLATE NOCASE ASC,
       d.id ASC
   `).all(
-    dayjs().subtract(1, 'day').toISOString(),
-    dayjs().subtract(7, 'day').toISOString(),
-    dayjs().subtract(30, 'day').toISOString(),
+    nowIso,
+    nowIso,
+    todayStart,
+    nowIso,
+    todayStart,
+    nowIso,
+    nowIso,
+    last7DaysStart,
+    nowIso,
+    last7DaysStart,
+    nowIso,
+    nowIso,
+    last30DaysStart,
+    nowIso,
+    last30DaysStart,
     ...values,
   );
 }

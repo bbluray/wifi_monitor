@@ -24,6 +24,7 @@ export interface DeviceTimelineSegment {
   startAt: string;
   endAt: string;
   minutes: number;
+  dayLabel?: string;
 }
 
 export interface DeviceTimelineResponse {

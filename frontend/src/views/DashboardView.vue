@@ -1,10 +1,10 @@
 <template>
-  <div class="page-shell">
+  <div class="page-shell dashboard-shell">
     <div class="page-hero">
       <div>
         <h1 class="page-title">WiFi 设备考勤看板</h1>
         <p class="page-subtitle">
-          公开展示已发布设备的在线时长统计、当前在线状态与备注信息。点击任意行可查看图形化在线情况。
+          公开展示已发布设备的 1 天在线图。点击任意行可查看详情并修改设备名称。
         </p>
       </div>
       <n-space>
@@ -20,8 +20,8 @@
       <n-card class="stat-card" title="当前在线">
         <n-statistic :value="onlineCount" />
       </n-card>
-      <n-card class="stat-card" title="今日在线总分钟">
-        <n-statistic :value="todayTotalMinutes" />
+      <n-card class="stat-card" title="今日平均在线分钟">
+        <n-statistic :value="todayAverageMinutes" />
       </n-card>
       <n-card class="stat-card" title="最近刷新">
         <div>{{ lastLoadedAtText }}</div>
@@ -33,11 +33,11 @@
         <n-input
           v-model:value="keyword"
           clearable
-          placeholder="搜索设备名称 / MAC"
+          placeholder="搜索设备名称"
           style="max-width: 320px"
         />
         <n-space>
-          <n-text depth="3">数据每 60 秒自动刷新，所有人都可以修改公开设备名称</n-text>
+          <n-text depth="3">数据每 60 秒自动刷新，点击列表行可查看详情</n-text>
           <n-button @click="loadDevices" :loading="loading">刷新</n-button>
         </n-space>
       </div>
@@ -47,7 +47,6 @@
         :data="filteredDevices"
         :loading="loading"
         :row-props="rowProps"
-        :pagination="{ pageSize: 10 }"
       />
     </n-card>
 
@@ -59,8 +58,9 @@
       :bordered="false"
     >
       <n-space vertical size="large">
-        <n-descriptions bordered :column="2">
+        <n-descriptions bordered :column="3">
           <n-descriptions-item label="MAC">{{ selectedDevice?.macAddress }}</n-descriptions-item>
+          <n-descriptions-item label="IP 地址">{{ selectedDevice?.ipAddress || '—' }}</n-descriptions-item>
           <n-descriptions-item label="当前状态">
             <n-tag :type="selectedDevice?.isOnline ? 'success' : 'default'">
               {{ selectedDevice?.isOnline ? '在线' : '离线' }}
@@ -68,9 +68,21 @@
           </n-descriptions-item>
           <n-descriptions-item label="1 天在线">{{ formatMinutes(selectedDevice?.onlineMinutes1d ?? 0) }}</n-descriptions-item>
           <n-descriptions-item label="7 天在线">{{ formatMinutes(selectedDevice?.onlineMinutes7d ?? 0) }}</n-descriptions-item>
+          <n-descriptions-item label="30 天在线">{{ formatMinutes(selectedDevice?.onlineMinutes30d ?? 0) }}</n-descriptions-item>
         </n-descriptions>
 
         <n-space justify="space-between" align="center" wrap>
+          <n-space align="center" wrap>
+            <n-input
+              v-model:value="renameValue"
+              placeholder="请输入设备名称"
+              maxlength="64"
+              show-count
+              style="width: min(320px, 72vw)"
+              @keyup.enter="submitRename"
+            />
+            <n-button type="primary" :loading="renameSaving" @click="submitRename">保存名称</n-button>
+          </n-space>
           <n-space align="center">
             <n-radio-group v-model:value="timelineRange" @update:value="loadTimeline">
               <n-radio-button value="1d">1 天</n-radio-button>
@@ -92,28 +104,6 @@
         </n-spin>
       </n-space>
     </n-modal>
-
-    <n-modal
-      v-model:show="renameVisible"
-      preset="dialog"
-      title="修改设备名称"
-      style="width: min(520px, 92vw)"
-    >
-      <n-input
-        v-model:value="renameValue"
-        placeholder="请输入设备名称"
-        maxlength="64"
-        show-count
-        @keyup.enter="submitRename"
-      />
-
-      <template #action>
-        <n-space>
-          <n-button @click="renameVisible = false">取消</n-button>
-          <n-button type="primary" :loading="renameSaving" @click="submitRename">保存</n-button>
-        </n-space>
-      </template>
-    </n-modal>
   </div>
 </template>
 
@@ -121,7 +111,7 @@
 import { computed, h, onBeforeUnmount, onMounted, ref } from 'vue';
 import dayjs from 'dayjs';
 import { useRouter } from 'vue-router';
-import { NButton, NInput, NTag, useMessage, type DataTableColumns } from 'naive-ui';
+import { NTag, useMessage, type DataTableColumns } from 'naive-ui';
 import { CustomChart, HeatmapChart } from 'echarts/charts';
 import { GridComponent, TitleComponent, TooltipComponent, VisualMapComponent } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
@@ -140,6 +130,7 @@ const devices = ref<DeviceListItem[]>([]);
 const keyword = ref('');
 const lastLoadedAt = ref<string | null>(null);
 const timer = ref<number | null>(null);
+const dayTimelineRequestToken = ref(0);
 
 const detailVisible = ref(false);
 const selectedDevice = ref<DeviceListItem | null>(null);
@@ -148,10 +139,10 @@ const timelineDateValue = ref(dayjs().valueOf());
 const timelineLoading = ref(false);
 const timelineData = ref<DeviceTimelinePoint[]>([]);
 const timelineSegments = ref<DeviceTimelineSegment[]>([]);
+const dayTimelineSegments = ref<Record<number, DeviceTimelineSegment[]>>({});
+const dayTimelineLoadingIds = ref<number[]>([]);
 
-const renameVisible = ref(false);
 const renameSaving = ref(false);
-const renamingDevice = ref<DeviceListItem | null>(null);
 const renameValue = ref('');
 
 const filteredDevices = computed(() => {
@@ -159,102 +150,56 @@ const filteredDevices = computed(() => {
   if (!key) {
     return devices.value;
   }
-  return devices.value.filter((item) => {
-    return [item.displayName, item.macAddress]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase()
-      .includes(key);
-  });
+  return devices.value.filter((item) => item.displayName.toLowerCase().includes(key));
 });
 
 const onlineCount = computed(() => devices.value.filter((item) => item.isOnline).length);
-const todayTotalMinutes = computed(() =>
-  devices.value.reduce((sum, item) => sum + item.onlineMinutes1d, 0),
-);
+const todayAverageMinutes = computed(() => {
+  if (devices.value.length === 0) {
+    return 0;
+  }
+
+  const totalMinutes = devices.value.reduce((sum, item) => sum + item.onlineMinutes1d, 0);
+  return Math.round(totalMinutes / devices.value.length);
+});
 
 const lastLoadedAtText = computed(() =>
   lastLoadedAt.value ? dayjs(lastLoadedAt.value).format('YYYY-MM-DD HH:mm:ss') : '未刷新',
 );
 
+const statusMeta = {
+  online: { color: '#2f9e44', label: '在线' },
+  offline: { color: '#f08c00', label: '离线' },
+  pending: { color: '#d0d7de', label: '未开始' },
+} as const;
+
 const columns = computed<DataTableColumns<DeviceListItem>>(() => [
   {
     title: '设备名称',
     key: 'displayName',
-    width: 120,
-  },
-  {
-    title: 'MAC',
-    key: 'macAddress',
-    width: 120,
-  },
-  {
-    title: 'IP',
-    key: 'ipAddress',
-    width: 120,
+    minWidth: 150,
     render(row) {
-      return row.ipAddress || '—';
+      return renderDeviceName(row);
     },
   },
   {
     title: '当前状态',
     key: 'isOnline',
-    width: 100,
+    width: 96,
     render(row) {
       return h(
         NTag,
-        { type: row.isOnline ? 'success' : 'default', round: true },
+        { type: row.isOnline ? 'success' : 'default', round: true, size: 'small' },
         { default: () => (row.isOnline ? '在线' : '离线') },
       );
     },
   },
   {
-    title: '1 天在线',
-    key: 'onlineMinutes1d',
-    width: 100,
+    title: '一天在线图',
+    key: 'timeline',
+    minWidth: 560,
     render(row) {
-      return formatMinutes(row.onlineMinutes1d);
-    },
-  },
-  {
-    title: '7 天在线',
-    key: 'onlineMinutes7d',
-    width: 100,
-    render(row) {
-      return formatMinutes(row.onlineMinutes7d);
-    },
-  },
-  {
-    title: '操作',
-    key: 'actions',
-    width: 170,
-    render(row) {
-      return h('div', { style: 'display:flex;gap:8px;' }, [
-        h(
-          NButton,
-          {
-            size: 'small',
-            tertiary: true,
-            onClick: (event: MouseEvent) => {
-              event.stopPropagation();
-              openRename(row);
-            },
-          },
-          { default: () => '改名' },
-        ),
-        h(
-          NButton,
-          {
-            size: 'small',
-            tertiary: true,
-            onClick: (event: MouseEvent) => {
-              event.stopPropagation();
-              openDetail(row);
-            },
-          },
-          { default: () => '查看图表' },
-        ),
-      ]);
+      return renderDayTimeline(row);
     },
   },
 ]);
@@ -264,27 +209,42 @@ const chartOption = computed(() => {
   const titleText = selectedDevice.value
     ? `${selectedDevice.value.displayName} (${selectedDevice.value.macAddress}) 在线情况`
     : '在线情况';
-  const statusMeta = {
-    online: { color: '#2f9e44', label: '在线' },
-    offline: { color: '#f08c00', label: '离线' },
-    pending: { color: '#d0d7de', label: '未开始' },
-  } as const;
 
   const dayLabels = timelineRange.value === '7d'
     ? timelineData.value.map((item) => item.label)
     : [dayjs(timelineDateValue.value).format('MM-DD')];
 
+  return createTimelineChartOption({
+    segments: timelineSegments.value,
+    dayLabels,
+    title: `${titleText} · ${timelineRange.value === '7d' ? `${dayLabels[0]} 至 ${dayLabels[dayLabels.length - 1]}` : titleDate}`,
+    compact: false,
+  });
+});
+
+function createTimelineChartOption(input: {
+  segments: DeviceTimelineSegment[];
+  dayLabels: string[];
+  title?: string;
+  compact: boolean;
+}) {
+  const { segments, dayLabels, title, compact } = input;
   const dayIndexMap = new Map(dayLabels.map((label, index) => [label, dayLabels.length - 1 - index]));
 
-  const chartSegments = timelineSegments.value.map((segment) => {
+  const chartSegments = segments.map((segment) => {
     const startAt = dayjs(segment.startAt);
     const endAt = dayjs(segment.endAt);
+    const dayStart = startAt.startOf('day');
     const meta = statusMeta[segment.status];
     const dayLabel = segment.dayLabel ?? startAt.format('MM-DD');
     const rowIndex = dayIndexMap.get(dayLabel) ?? 0;
     return {
       name: meta.label,
-      value: [rowIndex, startAt.hour() + startAt.minute() / 60, endAt.hour() + endAt.minute() / 60],
+      value: [
+        rowIndex,
+        startAt.diff(dayStart, 'minute') / 60,
+        endAt.diff(dayStart, 'minute') / 60,
+      ],
       itemStyle: { color: meta.color },
       minutes: segment.minutes,
       startLabel: startAt.format('MM-DD HH:mm'),
@@ -292,79 +252,100 @@ const chartOption = computed(() => {
     };
   });
 
-  if (timelineRange.value === '1d' || timelineRange.value === '7d') {
-    return {
-      title: {
-        text: `${titleText} · ${timelineRange.value === '7d' ? `${dayLabels[0]} 至 ${dayLabels[dayLabels.length - 1]}` : titleDate}`,
-        left: 'center',
-      },
-      tooltip: {
-        trigger: 'item',
-        formatter: (params: any) => {
-          const data = params.data;
-          return `${data.startLabel} - ${data.endLabel}<br/>${data.name}: ${data.minutes} 分钟`;
-        },
-      },
-      grid: {
-        left: '8%',
-        right: '8%',
-        top: '30%',
-        bottom: '18%',
-        containLabel: true,
-      },
-      xAxis: {
-        type: 'value',
-        min: 0,
-        max: 24,
-        interval: 2,
-        axisLabel: {
-          formatter: (value: number) => `${String(value).padStart(2, '0')}:00`,
-        },
-        splitLine: {
-          show: true,
-          lineStyle: { color: '#eceff1' },
-        },
-      },
-      yAxis: {
-        type: 'category',
-        data: timelineRange.value === '7d' ? [...dayLabels].reverse() : [''],
-        axisLine: { show: false },
-        axisLabel: { show: timelineRange.value === '7d' },
-        axisTick: { show: false },
-        splitLine: { show: false },
-      },
-      series: [
-        {
-          type: 'custom',
-          coordinateSystem: 'cartesian2d',
-          data: chartSegments,
-          renderItem(params: any, api: any) {
-            const start = api.coord([api.value(1), api.value(0)]);
-            const end = api.coord([api.value(2), api.value(0)]);
-            const barHeight = Math.max(24, api.size([0, 1])[1] * 0.42);
-            return {
-              type: 'rect',
-              shape: {
-                x: start[0],
-                y: start[1] - barHeight / 2,
-                width: Math.max(1, end[0] - start[0]),
-                height: barHeight,
-              },
-              style: api.style(),
-            };
+  return {
+    animation: false,
+    title: title
+      ? {
+          text: title,
+          left: 'center',
+          top: compact ? 4 : 8,
+          textStyle: {
+            fontSize: compact ? 12 : 16,
+            fontWeight: compact ? 'normal' : 'bold',
           },
+        }
+      : undefined,
+    tooltip: {
+      trigger: 'item',
+      formatter: (params: any) => {
+        const data = params.data;
+        return `${data.startLabel} - ${data.endLabel}<br/>${data.name}: ${data.minutes} 分钟`;
+      },
+    },
+    grid: compact
+      ? {
+          left: 12,
+          right: 12,
+          top: 12,
+          bottom: 22,
+          containLabel: false,
+        }
+      : {
+          left: '8%',
+          right: '8%',
+          top: '30%',
+          bottom: '18%',
+          containLabel: true,
         },
-      ],
-      graphic: [
-        { type: 'text', left: '8%', top: '18%', style: { text: '在线', fill: '#2f9e44', fontSize: 12 } },
-        { type: 'text', left: '14%', top: '18%', style: { text: '离线', fill: '#f08c00', fontSize: 12 } },
-        { type: 'text', left: '20%', top: '18%', style: { text: '未开始', fill: '#98a2b3', fontSize: 12 } },
-      ],
-    };
-  }
-
-  return {};
-});
+    xAxis: {
+      type: 'value',
+      min: 0,
+      max: 24,
+      interval: compact ? 6 : 2,
+      axisLabel: {
+        show: true,
+        fontSize: compact ? 10 : 12,
+        formatter: (value: number) => `${String(value).padStart(2, '0')}:00`,
+      },
+      axisLine: {
+        lineStyle: { color: '#d0d7de' },
+      },
+      axisTick: { show: false },
+      splitLine: {
+        show: true,
+        lineStyle: { color: '#eceff1' },
+      },
+    },
+    yAxis: {
+      type: 'category',
+      data: dayLabels.length > 1 ? [...dayLabels].reverse() : [''],
+      axisLine: { show: false },
+      axisLabel: { show: !compact && dayLabels.length > 1 },
+      axisTick: { show: false },
+      splitLine: { show: false },
+    },
+    series: [
+      {
+        type: 'custom',
+        coordinateSystem: 'cartesian2d',
+        data: chartSegments,
+        renderItem(params: any, api: any) {
+          const start = api.coord([api.value(1), api.value(0)]);
+          const end = api.coord([api.value(2), api.value(0)]);
+          const barHeight = compact ? 18 : Math.max(24, api.size([0, 1])[1] * 0.42);
+          return {
+            type: 'rect',
+            shape: {
+              x: start[0],
+              y: start[1] - barHeight / 2,
+              width: Math.max(1, end[0] - start[0]),
+              height: barHeight,
+              r: compact ? 3 : 0,
+            },
+            style: api.style(),
+          };
+        },
+      },
+    ],
+    graphic: compact
+      ? undefined
+      : [
+          { type: 'text', left: '8%', top: '18%', style: { text: '在线', fill: '#2f9e44', fontSize: 12 } },
+          { type: 'text', left: '14%', top: '18%', style: { text: '离线', fill: '#f08c00', fontSize: 12 } },
+          { type: 'text', left: '20%', top: '18%', style: { text: '未开始', fill: '#98a2b3', fontSize: 12 } },
+        ],
+  };
+}
 
 function formatMinutes(minutes: number) {
   if (minutes <= 0) {
@@ -389,6 +370,42 @@ function handleTimelineDateChange() {
   void loadTimeline();
 }
 
+function isDeviceTimelineLoading(deviceId: number) {
+  return dayTimelineLoadingIds.value.includes(deviceId);
+}
+
+function renderDeviceName(row: DeviceListItem) {
+  return h('div', { class: 'device-cell' }, [
+    h('div', { class: 'device-title' }, row.displayName),
+    h(
+      'div',
+      { class: 'device-stats' },
+      formatMinutes(row.onlineMinutes1d),
+    ),
+  ]);
+}
+
+function renderDayTimeline(row: DeviceListItem) {
+  if (isDeviceTimelineLoading(row.id)) {
+    return h('div', { class: 'timeline-loading' }, '图形加载中...');
+  }
+
+  const segments = dayTimelineSegments.value[row.id] ?? [];
+  const option = createTimelineChartOption({
+    segments,
+    dayLabels: [dayjs().format('MM-DD')],
+    compact: true,
+  });
+
+  return h('div', { class: 'timeline-cell' }, [
+    h(VChart, {
+      autoresize: true,
+      option,
+      style: 'height: 60px; width: 100%;',
+    }),
+  ]);
+}
+
 function rowProps(row: DeviceListItem) {
   return {
     class: 'clickable-row',
@@ -399,8 +416,10 @@ function rowProps(row: DeviceListItem) {
 async function loadDevices() {
   loading.value = true;
   try {
-    devices.value = await fetchVisibleDevices();
+    const result = await fetchVisibleDevices();
+    devices.value = result;
     lastLoadedAt.value = new Date().toISOString();
+    void loadDayTimelines(result);
   } catch (error) {
     console.error(error);
     message.error('加载设备列表失败');
@@ -409,13 +428,51 @@ async function loadDevices() {
   }
 }
 
+async function loadDayTimelines(deviceList: DeviceListItem[]) {
+  const currentToken = dayTimelineRequestToken.value + 1;
+  dayTimelineRequestToken.value = currentToken;
+
+  const deviceIds = new Set(deviceList.map((item) => item.id));
+  dayTimelineSegments.value = Object.fromEntries(
+    Object.entries(dayTimelineSegments.value).filter(([deviceId]) => deviceIds.has(Number(deviceId))),
+  );
+  dayTimelineLoadingIds.value = deviceList.map((item) => item.id);
+
+  const results = await Promise.allSettled(
+    deviceList.map(async (device) => {
+      const result = await fetchDeviceTimeline(device.id, '1d', dayjs().format('YYYY-MM-DD'));
+      return { id: device.id, segments: result.segments ?? [] };
+    }),
+  );
+
+  if (dayTimelineRequestToken.value !== currentToken) {
+    return;
+  }
+
+  const nextMap = { ...dayTimelineSegments.value } as Record<number, DeviceTimelineSegment[]>;
+  results.forEach((result, index) => {
+    const deviceId = deviceList[index]?.id;
+    if (!deviceId) {
+      return;
+    }
+    nextMap[deviceId] = result.status === 'fulfilled' ? result.value.segments : [];
+  });
+
+  dayTimelineSegments.value = nextMap;
+  dayTimelineLoadingIds.value = [];
+}
+
 async function loadTimeline() {
   if (!selectedDevice.value) {
     return;
   }
   timelineLoading.value = true;
   try {
-    const result = await fetchDeviceTimeline(selectedDevice.value.id, timelineRange.value, dayjs(timelineDateValue.value).format('YYYY-MM-DD'));
+    const result = await fetchDeviceTimeline(
+      selectedDevice.value.id,
+      timelineRange.value,
+      dayjs(timelineDateValue.value).format('YYYY-MM-DD'),
+    );
     timelineData.value = result.timeline;
     timelineSegments.value = result.segments ?? [];
   } catch (error) {
@@ -428,19 +485,14 @@ async function loadTimeline() {
 
 function openDetail(device: DeviceListItem) {
   selectedDevice.value = device;
+  renameValue.value = device.name || device.displayName || '';
   timelineRange.value = '1d';
   detailVisible.value = true;
   void loadTimeline();
 }
 
-function openRename(device: DeviceListItem) {
-  renamingDevice.value = device;
-  renameValue.value = device.name || device.displayName || '';
-  renameVisible.value = true;
-}
-
 async function submitRename() {
-  if (!renamingDevice.value) {
+  if (!selectedDevice.value) {
     return;
   }
 
@@ -452,21 +504,16 @@ async function submitRename() {
 
   renameSaving.value = true;
   try {
-    const updated = await updatePublicDeviceName(renamingDevice.value.id, name);
+    const updated = await updatePublicDeviceName(selectedDevice.value.id, name);
     const nextName = typeof updated.name === 'string' && updated.name.trim() ? updated.name.trim() : name;
 
     devices.value = devices.value.map((item) =>
-      item.id === renamingDevice.value?.id
+      item.id === selectedDevice.value?.id
         ? { ...item, name: nextName, displayName: nextName }
         : item,
     );
 
-    if (selectedDevice.value?.id === renamingDevice.value.id) {
-      selectedDevice.value = { ...selectedDevice.value, name: nextName, displayName: nextName };
-    }
-
-    renamingDevice.value = null;
-    renameVisible.value = false;
+    selectedDevice.value = { ...selectedDevice.value, name: nextName, displayName: nextName };
     message.success('设备名称已更新');
   } catch (error) {
     console.error(error);
@@ -489,3 +536,37 @@ onBeforeUnmount(() => {
   }
 });
 </script>
+
+<style scoped>
+.dashboard-shell :deep(.n-data-table-th) {
+  white-space: nowrap;
+}
+
+.device-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.device-title {
+  font-weight: 600;
+  color: #101828;
+}
+
+.device-stats {
+  font-size: 12px;
+  color: #475467;
+}
+
+.timeline-cell {
+  min-width: 0;
+}
+
+.timeline-loading {
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  color: #98a2b3;
+  font-size: 12px;
+}
+</style>

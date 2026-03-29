@@ -52,6 +52,10 @@ function parseMacFromValue(value: unknown): string | null {
   return null;
 }
 
+function isAllowedDeviceIp(ip: string) {
+  return ip.startsWith('192.');
+}
+
 function extractIpFromOid(oid: string, baseOid: string): string | null {
   const normalizedOid = oid.replace(/^iso\./, '1.');
   const normalizedBase = baseOid.replace(/^iso\./, '1.');
@@ -70,7 +74,8 @@ function extractIpFromOid(oid: string, baseOid: string): string | null {
     return null;
   }
 
-  return ipOctets.join('.');
+  const ip = ipOctets.join('.');
+  return isAllowedDeviceIp(ip) ? ip : null;
 }
 
 function parseDiscoveryFromVarbind(varbind: { oid: string; type?: number; value: unknown }, baseOid: string): DeviceDiscovery | null {
