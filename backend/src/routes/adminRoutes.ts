@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { requireAdmin, requireAuth } from '../middleware/authMiddleware.js';
-import { createDevice, deleteDevice, getDeviceById, listAllDevices, updateDevice } from '../services/deviceService.js';
+import { createDevice, deleteDevice, getDeviceById, getDeviceTimeline, listAllDevices, updateDevice } from '../services/deviceService.js';
 import { createRouter, deleteRouter, getRouterById, listRouters, updateRouter } from '../services/routerService.js';
 import { runCollectorOnce } from '../services/collector.js';
 
@@ -98,6 +98,34 @@ router.get('/devices', (_req, res) => {
   return res.json(listAllDevices());
 });
 
+router.get('/devices/:id/timeline', (req, res) => {
+  const deviceId = Number.parseInt(req.params.id, 10);
+  if (Number.isNaN(deviceId)) {
+    return res.status(400).json({ message: '无效的设备 ID' });
+  }
+
+  const device = getDeviceById(deviceId);
+  if (!device) {
+    return res.status(404).json({ message: '设备不存在' });
+  }
+
+  const range = String(req.query.range ?? '7d');
+  const normalizedRange = range === '1d' || range === '7d' ? range : '7d';
+  const date = typeof req.query.date === 'string' ? req.query.date : undefined;
+
+  const timeline = getDeviceTimeline(deviceId, normalizedRange, date);
+  if (!timeline) {
+    return res.status(404).json({ message: '设备不存在' });
+  }
+
+  return res.json({
+    device,
+    range: normalizedRange,
+    timeline: timeline.timeline,
+    segments: timeline.segments,
+  });
+});
+
 router.post('/devices', (req, res) => {
   const payload = req.body as any;
   if (!payload.macAddress) {
@@ -109,7 +137,7 @@ router.post('/devices', (req, res) => {
       name: typeof payload.name === 'string' ? payload.name : '',
       macAddress: String(payload.macAddress),
       note: typeof payload.note === 'string' ? payload.note : '',
-      isVisible: payload.isVisible !== false,
+      isVisible: payload.isVisible === true,
     });
     return res.status(201).json(created);
   } catch (error) {

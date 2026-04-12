@@ -409,7 +409,7 @@ function renderDayTimeline(row: DeviceListItem) {
 function rowProps(row: DeviceListItem) {
   return {
     class: 'clickable-row',
-    onClick: () => openDetail(row),
+    onClick: () => void openDetail(row),
   };
 }
 

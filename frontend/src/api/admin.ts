@@ -1,5 +1,5 @@
 import client from './client';
-import type { DeviceAdminRow, RouterItem } from '@/types';
+import type { DeviceAdminRow, DeviceTimelineResponse, RouterItem } from '@/types';
 
 export async function fetchRouters() {
   const { data } = await client.get<RouterItem[]>('/admin/routers');
@@ -32,6 +32,13 @@ export async function createDevice(payload: Partial<DeviceAdminRow>) {
 
 export async function updateDevice(id: number, payload: Partial<DeviceAdminRow>) {
   const { data } = await client.patch(`/admin/devices/${id}`, payload);
+  return data;
+}
+
+export async function fetchAdminDeviceTimeline(deviceId: number, range: '1d' | '7d', date?: string) {
+  const { data } = await client.get<DeviceTimelineResponse>(`/admin/devices/${deviceId}/timeline`, {
+    params: { range, date },
+  });
   return data;
 }
 

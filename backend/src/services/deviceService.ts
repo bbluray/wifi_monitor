@@ -259,7 +259,7 @@ export function createDevice(input: DeviceInput) {
     macAddress,
     (input.ipAddress ?? '').trim() || null,
     (input.note ?? '').trim(),
-    input.isVisible === false ? 0 : 1,
+    input.isVisible === true ? 1 : 0,
     now,
     now,
   );
@@ -314,7 +314,7 @@ export function upsertDeviceByMac(macAddressInput: string) {
   const now = dayjs().toISOString();
   const result = db.prepare(`
     INSERT INTO devices (name, mac_address, ip_address, note, is_visible, created_at, updated_at)
-    VALUES (?, ?, NULL, '', 1, ?, ?)
+    VALUES (?, ?, NULL, '', 0, ?, ?)
   `).run('', macAddress, now, now);
 
   return Number(result.lastInsertRowid);
